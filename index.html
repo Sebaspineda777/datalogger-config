@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configurar Datalogger SAMA</title>
+<style>
+  :root {
+    --bg: #f6f7f5; --fg: #1c2321; --muted: #5d6a66; --line: #cfd6d2;
+    --accent: #0b6e4f; --accent-fg: #ffffff; --panel: #ffffff; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141a18; --fg: #e6ece9; --muted: #93a19b; --line: #2c3733;
+      --accent: #3ec99a; --accent-fg: #0b1512; --panel: #1b2321; --err: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 1.3rem; margin: 8px 0 4px; }
+  .state { color: var(--muted); margin: 0 0 16px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  label { display: block; margin-bottom: 12px; font-weight: 600; }
+  label small { font-weight: 400; color: var(--muted); }
+  input {
+    width: 100%; margin-top: 4px; padding: 10px; font: inherit;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    flex: 1; min-width: 120px; padding: 12px; font: inherit; font-weight: 600;
+    border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: var(--accent-fg); cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #log {
+    height: 140px; overflow: auto; margin: 0; padding: 10px;
+    font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    white-space: pre-wrap;
+  }
+  .warn { color: var(--err); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Configurar datalogger</h1>
+  <p class="state" id="state">Desconectado</p>
+  <p class="warn" id="unsupported" hidden>
+    Este navegador no soporta Web Bluetooth. Usa Chrome en Android y abre la página por HTTPS.
+  </p>
+
+  <div class="panel">
+    <div class="row">
+      <button id="btnConnect">Conectar</button>
+      <button id="btnDisconnect" class="secondary" disabled>Desconectar</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label>Red WiFi (SSID)
+      <input id="ssid" autocomplete="off" disabled>
+    </label>
+    <label>Contraseña WiFi <small>(déjala vacía para no cambiarla)</small>
+      <input id="pass" type="password" autocomplete="off" disabled>
+    </label>
+    <label>Broker MQTT
+      <input id="mqtt" placeholder="broker.ejemplo.com" autocomplete="off" disabled>
+    </label>
+    <label>Intervalo de envío (segundos)
+      <input id="interval" type="number" min="10" max="86400" disabled>
+    </label>
+    <div class="row">
+      <button id="btnRead" class="secondary" disabled>Leer del equipo</button>
+      <button id="btnSave" disabled>Guardar en el equipo</button>
+    </div>
+  </div>
+
+  <pre id="log" aria-live="polite"></pre>
+</main>
+
+<script>
+// Deben coincidir con los UUID del firmware del ESP32
+const SERVICE_UUID = '5a0d0001-6f1e-4c3a-9b7e-2f4d8c1a0001';
+const CONFIG_UUID  = '5a0d0002-6f1e-4c3a-9b7e-2f4d8c1a0001';
+const STATUS_UUID  = '5a0d0003-6f1e-4c3a-9b7e-2f4d8c1a0001';
+
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+let device, configChar, statusChar;
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  $('log').textContent += `[${t}] ${msg}\n`;
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setConnected(on) {
+  $('state').textContent = on ? `Conectado a ${device.name}` : 'Desconectado';
+  $('btnConnect').disabled = on;
+  ['btnDisconnect', 'btnRead', 'btnSave', 'ssid', 'pass', 'mqtt', 'interval']
+    .forEach(id => $(id).disabled = !on);
+}
+
+async function connect() {
+  try {
+    // Debe ejecutarse desde un gesto del usuario (clic)
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'SAMA' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      log('Conexión perdida');
+      setConnected(false);
+    });
+
+    log('Conectando...');
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    configChar = await service.getCharacteristic(CONFIG_UUID);
+    statusChar = await service.getCharacteristic(STATUS_UUID);
+
+    await statusChar.startNotifications();
+    statusChar.addEventListener('characteristicvaluechanged', e => {
+      log('Equipo: ' + dec.decode(e.target.value));
+    });
+
+    setConnected(true);
+    log('Conectado');
+    await readConfig();
+  } catch (err) {
+    log('Error: ' + err.message);
+  }
+}
+
+async function readConfig() {
+  try {
+    const value = await configChar.readValue();
+    const cfg = JSON.parse(dec.decode(value));
+    $('ssid').value = cfg.ssid ?? '';
+    $('mqtt').value = cfg.mqtt ?? '';
+    $('interval').value = cfg.interval ?? '';
+    $('pass').value = '';
+    log('Configuración leída');
+  } catch (err) {
+    log('No se pudo leer: ' + err.message);
+  }
+}
+
+async function saveConfig() {
+  const cfg = {
+    ssid: $('ssid').value.trim(),
+    mqtt: $('mqtt').value.trim(),
+    interval: parseInt($('interval').value, 10)
+  };
+  if ($('pass').value) cfg.pass = $('pass').value;
+
+  if (!cfg.ssid || !cfg.mqtt || !(cfg.interval >= 10)) {
+    log('Revisa los campos: SSID, broker e intervalo (mínimo 10 s)');
+    return;
+  }
+  try {
+    await configChar.writeValueWithResponse(enc.encode(JSON.stringify(cfg)));
+    log('Configuración enviada');
+  } catch (err) {
+    log('No se pudo guardar: ' + err.message);
+  }
+}
+
+$('btnConnect').addEventListener('click', connect);
+$('btnDisconnect').addEventListener('click', () => device?.gatt.disconnect());
+$('btnRead').addEventListener('click', readConfig);
+$('btnSave').addEventListener('click', saveConfig);
+
+if (!navigator.bluetooth) {
+  $('unsupported').hidden = false;
+  $('btnConnect').disabled = true;
+}
+</script>
+</body>
+</html>
