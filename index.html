@@ -117,9 +117,9 @@ async function connect() {
   try {
     // Debe ejecutarse desde un gesto del usuario (clic)
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'SAMA' }],
-      optionalServices: [SERVICE_UUID]
-    });
+  filters: [{ services: [SERVICE_UUID] }],
+  optionalServices: [SERVICE_UUID]
+});
     device.addEventListener('gattserverdisconnected', () => {
       log('Conexión perdida');
       setConnected(false);
